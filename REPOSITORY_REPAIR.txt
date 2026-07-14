@@ -1,0 +1,17 @@
+GitHubリポジトリ修復手順
+
+1. 次の旧ファイルがリポジトリに残っている場合は削除してください。
+   - update_data.py
+   - tests/test_update_data.py
+
+2. このZIP内のファイルをリポジトリ直下へ上書きしてください。
+   特に次の4ファイルは必ず置き換えてください。
+   - site_config.py
+   - updater.py
+   - tests/test_updater.py
+   - .github/workflows/update-data.yml
+
+3. GitHub Actionsから「Update Kyoto Sanga ticket data」を再実行してください。
+
+今回の修正版では、テスト対象を tests.test_updater に固定しているため、
+不要な旧テストファイルが残っていても自動検出されません。ただし混乱防止のため削除を推奨します。
