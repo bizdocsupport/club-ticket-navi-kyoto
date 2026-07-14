@@ -4,6 +4,8 @@ from datetime import date
 from updater import (
     apply_official_fixture_corrections,
     apply_official_ticket_schedules,
+    assert_fixture_fields_unchanged,
+    capture_fixture_fields,
     compute_kyoto_home_sales,
     extract_general_sale,
     extract_general_sale_from_page,
@@ -55,6 +57,34 @@ class TestKyotoUpdater(unittest.TestCase):
         self.assertIsNotNone(sale)
         self.assertTrue(sale.isoformat(timespec="minutes").startswith("2026-07-24T10:00"))
 
+    def test_extract_frontale_general_advance_sale_from_table(self):
+        html = """
+        <html><body>
+          <p>チケットの発売時間は、各発売日の10:00～となります。</p>
+          <table>
+            <thead>
+              <tr>
+                <th>カテゴリ</th><th>節</th><th>対戦相手</th>
+                <th>試合日 キックオフ</th>
+                <th>プレミアムプラン 超最速先行前売発売日</th>
+                <th>会員向け 前売発売日</th>
+                <th>一般向け 前売発売日</th><th>開催内容</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>J1リーグ</td><td>2</td><td>京都サンガF.C.</td>
+                <td>8/15（土） 19:00</td><td>7/23(木)</td>
+                <td>7/25(土)</td><td>8/1(土)</td><td>開催内容未定</td>
+              </tr>
+            </tbody>
+          </table>
+        </body></html>
+        """
+        sale = extract_general_sale_from_page(html, date(2026, 8, 15))
+        self.assertIsNotNone(sale)
+        self.assertEqual(sale.isoformat(timespec="minutes"), "2026-08-01T10:00+09:00")
+
     def test_extract_away_general_sale_from_card(self):
         html = """
         <section class="ticket-card">
@@ -96,39 +126,19 @@ class TestKyotoUpdater(unittest.TestCase):
         self.assertEqual(rows[1]["side"], "HOME")
         self.assertTrue(rows[1]["general_at"].startswith("2026-08-01T12:00"))
 
-    def test_corrects_luvas_wrong_provisional_fixture(self):
-        wrong = {
+    def test_static_fixture_correction_is_not_used(self):
+        row = {
             "season": "2026/27",
             "competition_group": "ＪリーグＹＢＣルヴァンカップ",
-            "competition_name": "ＪリーグYBCルヴァンカップ",
             "round_name": "２回戦",
-            "kickoff": "2026-09-29T15:00+09:00",
-            "date_text": "2026/9/29 15:00",
             "sort_date": "2026-09-29",
-            "side": "AWAY",
-            "home": "ＦＣ東京",
-            "away": "京都サンガF.C.",
             "opponent": "ＦＣ東京",
-            "stadium": "味の素スタジアム",
-            "match_url": "https://example.invalid/provisional",
         }
-        for column in (
-            "match_key", "season_pass_at", "sc_fastest_at", "sc_early_at",
-            "sc_member_at", "general_at", "ticket_source_url",
-            "ticket_source_name", "ticket_note", "last_checked",
-        ):
-            wrong.setdefault(column, "")
+        rows = apply_official_fixture_corrections([row])
+        self.assertIs(rows[0], row)
+        self.assertEqual(rows[0]["sort_date"], "2026-09-29")
+        self.assertEqual(rows[0]["opponent"], "ＦＣ東京")
 
-        rows = apply_official_fixture_corrections([wrong])
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["opponent"], "ＦＣ町田ゼルビア")
-        self.assertEqual(rows[0]["sort_date"], "2026-10-03")
-        self.assertEqual(rows[0]["kickoff"], "2026-10-03T16:00+09:00")
-        self.assertEqual(rows[0]["round_name"], "４回戦")
-        self.assertEqual(
-            rows[0]["match_url"],
-            "https://www.sanga-fc.jp/game/info/2026100307",
-        )
 
 
     def test_apply_official_image_schedule_for_kyoto_away_at_fukuoka(self):
@@ -166,6 +176,93 @@ class TestKyotoUpdater(unittest.TestCase):
         count = apply_official_ticket_schedules([row], team_name="ガンバ大阪")
         self.assertEqual(count, 1)
         self.assertEqual(row["general_at"], "2027-01-22T12:00+09:00")
+
+
+    def test_sanga_schedule_is_source_of_truth_for_competition_and_stadium(self):
+        html = """
+        <html><body>
+          <select><option selected>2026/27</option></select>
+          <section>
+            <h2>明治安田Ｊ１リーグ</h2>
+            <article class="game-card">
+              <div class="fixture-head">
+                <span>AWAY</span><span>第10節</span>
+                <span>エディオンピースウイング広島</span>
+              </div>
+              <div class="fixture-body">
+                <span>10.17 [土] 14:00</span>
+                <img alt="ロゴ：京都サンガF.C."><span>京都サンガF.C.</span>
+                <span>vs</span><img alt="ロゴ：サンフレッチェ広島"><span>サンフレッチェ広島</span>
+                <a href="/game/info/2026101701">試合情報</a>
+              </div>
+            </article>
+            <article class="game-card">
+              <div class="fixture-head">
+                <span>AWAY</span><span>第34節</span><span>ベスト電器スタジアム</span>
+              </div>
+              <div class="fixture-body">
+                <span>5.9 [日] 未定</span>
+                <img alt="ロゴ：京都サンガF.C."><span>京都サンガF.C.</span>
+                <span>vs</span><img alt="ロゴ：アビスパ福岡"><span>アビスパ福岡</span>
+                <p>ルヴァンカップ決勝進出クラブの試合は別日に開催する可能性があります。</p>
+                <a href="/game/info/2027050901">試合情報</a>
+              </div>
+            </article>
+          </section>
+          <section>
+            <h2>ＪリーグYBCルヴァンカップ</h2>
+            <article class="game-card">
+              <span>AWAY</span><span>４回戦</span><span>町田ＧＩＯＮスタジアム</span>
+              <span>10.3 [土] 16:00</span>
+              <img alt="ロゴ：京都サンガF.C."><span>京都サンガF.C.</span>
+              <span>vs</span><img alt="ロゴ：ＦＣ町田ゼルビア"><span>ＦＣ町田ゼルビア</span>
+              <a href="/game/info/2026100307">試合情報</a>
+            </article>
+          </section>
+        </body></html>
+        """
+        rows = parse_matches(html, "https://www.sanga-fc.jp/game")
+        by_opponent = {row["opponent"]: row for row in rows}
+
+        hiroshima = by_opponent["サンフレッチェ広島"]
+        self.assertEqual(hiroshima["stadium"], "エディオンピースウイング広島")
+        self.assertEqual(hiroshima["competition_group"], "Ｊ１リーグ")
+
+        fukuoka = by_opponent["アビスパ福岡"]
+        self.assertEqual(fukuoka["stadium"], "ベスト電器スタジアム")
+        self.assertEqual(fukuoka["competition_group"], "Ｊ１リーグ")
+
+        machida = by_opponent["ＦＣ町田ゼルビア"]
+        self.assertEqual(machida["competition_group"], "ＪリーグＹＢＣルヴァンカップ")
+
+    def test_ticket_enrichment_cannot_change_sanga_fixture_fields(self):
+        row = {
+            "season": "2026/27",
+            "competition_group": "Ｊ１リーグ",
+            "competition_name": "明治安田Ｊ１リーグ",
+            "round_name": "第10節",
+            "kickoff": "2026-10-17T14:00+09:00",
+            "date_text": "2026/10/17 14:00",
+            "sort_date": "2026-10-17",
+            "side": "AWAY",
+            "home": "サンフレッチェ広島",
+            "away": "京都サンガF.C.",
+            "opponent": "サンフレッチェ広島",
+            "stadium": "エディオンピースウイング広島",
+            "match_url": "https://www.sanga-fc.jp/game/info/example",
+            "general_at": "",
+            "ticket_source_url": "",
+            "ticket_source_name": "",
+            "ticket_note": "",
+        }
+        snapshot = capture_fixture_fields([row])
+        row["general_at"] = "2026-09-01T10:00+09:00"
+        row["ticket_source_url"] = "https://example.com/tickets"
+        assert_fixture_fields_unchanged(snapshot, [row])
+
+        row["stadium"] = "未定"
+        with self.assertRaises(RuntimeError):
+            assert_fixture_fields_unchanged(snapshot, [row])
 
     def test_parse_ticket_news_fixture(self):
         html = """
