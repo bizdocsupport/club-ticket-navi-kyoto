@@ -2,6 +2,7 @@ import unittest
 from datetime import date
 
 from updater import (
+    apply_official_fixture_corrections,
     compute_kyoto_home_sales,
     extract_general_sale,
     extract_general_sale_from_page,
@@ -93,6 +94,40 @@ class TestKyotoUpdater(unittest.TestCase):
         self.assertEqual(rows[0]["sort_date"], "2026-08-09")
         self.assertEqual(rows[1]["side"], "HOME")
         self.assertTrue(rows[1]["general_at"].startswith("2026-08-01T12:00"))
+
+    def test_corrects_luvas_wrong_provisional_fixture(self):
+        wrong = {
+            "season": "2026/27",
+            "competition_group": "ＪリーグＹＢＣルヴァンカップ",
+            "competition_name": "ＪリーグYBCルヴァンカップ",
+            "round_name": "２回戦",
+            "kickoff": "2026-09-29T15:00+09:00",
+            "date_text": "2026/9/29 15:00",
+            "sort_date": "2026-09-29",
+            "side": "AWAY",
+            "home": "ＦＣ東京",
+            "away": "京都サンガF.C.",
+            "opponent": "ＦＣ東京",
+            "stadium": "味の素スタジアム",
+            "match_url": "https://example.invalid/provisional",
+        }
+        for column in (
+            "match_key", "season_pass_at", "sc_fastest_at", "sc_early_at",
+            "sc_member_at", "general_at", "ticket_source_url",
+            "ticket_source_name", "ticket_note", "last_checked",
+        ):
+            wrong.setdefault(column, "")
+
+        rows = apply_official_fixture_corrections([wrong])
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["opponent"], "ＦＣ町田ゼルビア")
+        self.assertEqual(rows[0]["sort_date"], "2026-10-03")
+        self.assertEqual(rows[0]["kickoff"], "2026-10-03T16:00+09:00")
+        self.assertEqual(rows[0]["round_name"], "４回戦")
+        self.assertEqual(
+            rows[0]["match_url"],
+            "https://www.sanga-fc.jp/game/info/2026100307",
+        )
 
     def test_parse_ticket_news_fixture(self):
         html = """
