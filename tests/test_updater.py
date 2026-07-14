@@ -3,6 +3,7 @@ from datetime import date
 
 from updater import (
     apply_official_fixture_corrections,
+    apply_official_ticket_schedules,
     compute_kyoto_home_sales,
     extract_general_sale,
     extract_general_sale_from_page,
@@ -128,6 +129,43 @@ class TestKyotoUpdater(unittest.TestCase):
             rows[0]["match_url"],
             "https://www.sanga-fc.jp/game/info/2026100307",
         )
+
+
+    def test_apply_official_image_schedule_for_kyoto_away_at_fukuoka(self):
+        row = {
+            "side": "AWAY",
+            "opponent": "アビスパ福岡",
+            "sort_date": "2027-05-09",
+            "round_name": "第34節",
+            "competition_group": "Ｊ１リーグ",
+            "general_at": "",
+            "ticket_source_url": "",
+            "ticket_source_name": "",
+            "ticket_note": "",
+        }
+        count = apply_official_ticket_schedules([row])
+        self.assertEqual(count, 1)
+        self.assertEqual(row["general_at"], "2027-04-11T10:00+09:00")
+        self.assertEqual(
+            row["ticket_source_url"],
+            "https://www.avispa.co.jp/news/post-87276",
+        )
+
+    def test_official_image_schedule_is_reusable_for_other_team_editions(self):
+        row = {
+            "side": "AWAY",
+            "opponent": "ファジアーノ岡山",
+            "sort_date": "2027-02-20",
+            "round_name": "第２２節",
+            "competition_group": "Ｊ１リーグ",
+            "general_at": "",
+            "ticket_source_url": "",
+            "ticket_source_name": "",
+            "ticket_note": "",
+        }
+        count = apply_official_ticket_schedules([row], team_name="ガンバ大阪")
+        self.assertEqual(count, 1)
+        self.assertEqual(row["general_at"], "2027-01-22T12:00+09:00")
 
     def test_parse_ticket_news_fixture(self):
         html = """
