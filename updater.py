@@ -35,6 +35,14 @@ MATCH_COLUMNS = [
 ]
 NEWS_COLUMNS = ["published_at", "title", "url", "fetched_at"]
 
+# 以下は京都サンガF.C.公式「試合日程・結果」だけを正とする項目。
+# 対戦クラブのチケットページや補正CSVからは変更しない。
+FIXTURE_SOURCE_COLUMNS = (
+    "season", "competition_group", "competition_name", "round_name",
+    "kickoff", "date_text", "sort_date", "side", "home", "away",
+    "opponent", "stadium", "match_url",
+)
+
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -80,28 +88,12 @@ KYOTO_ALIASES = ("京都サンガF.C.", "京都サンガ", "京都")
 DATE_MD_RE = re.compile(r"(?<!\d)(1[0-2]|0?[1-9])[./月](3[01]|[12]?\d)(?:日)?")
 TIME_RE = re.compile(r"(?<!\d)([01]?\d|2[0-3])[:：]([0-5]\d)")
 ROUND_RE = re.compile(r"(第\s*\d+\s*節|第\s*\d+\s*回戦|準々決勝|準決勝|決勝|プレーオフ[^\s]*)")
+GENERAL_SALE_LABEL = r"一般\s*(?:向け\s*)?(?:前売\s*)?(?:販売|発売)(?:日)?"
+GENERAL_SALE_LABEL_RE = re.compile(GENERAL_SALE_LABEL, re.I)
 
-# 京都公式サイトで確定済みの個別試合補正。
-# 2026/27ルヴァンカップ4回戦は、京都公式で
-# 2026/10/3 16:00・アウェイ町田戦と発表されている。
-# 一時的な仮日程（9/29・FC東京等）がHTML内に残った場合でも、
-# 公開済みの確定情報を優先する。
-OFFICIAL_FIXTURE_CORRECTIONS = [
-    {
-        "season": "2026/27",
-        "competition_group": "ＪリーグＹＢＣルヴァンカップ",
-        "round_name": "４回戦",
-        "kickoff": "2026-10-03T16:00+09:00",
-        "date_text": "2026/10/3 16:00",
-        "sort_date": "2026-10-03",
-        "side": "AWAY",
-        "home": "ＦＣ町田ゼルビア",
-        "away": "京都サンガF.C.",
-        "opponent": "ＦＣ町田ゼルビア",
-        "stadium": "町田ＧＩＯＮスタジアム",
-        "match_url": "https://www.sanga-fc.jp/game/info/2026100307",
-    },
-]
+# 試合日・会場・大会・H/A・対戦カードは、京都公式「試合日程・結果」
+# の取得結果だけを正とする。静的な試合補正は持たない。
+OFFICIAL_FIXTURE_CORRECTIONS: tuple[dict[str, str], ...] = ()
 
 
 def now_iso() -> str:
@@ -171,19 +163,40 @@ def extract_date_and_time(text: str, season: str) -> tuple[str, str, str]:
 
 
 def nearest_match_container(link: Tag, team_aliases: list[str]) -> Tag:
+    """試合リンクを含む、1試合分のカード要素を選ぶ。
+
+    京都公式では会場名が対戦カード本体の外側に置かれることがあるため、
+    単純に最小の親要素を返すと会場を取りこぼす。試合リンク数、節、
+    会場らしい文字列を加点し、複数試合を巻き込む大きな親要素は減点する。
+    """
     best: Tag = link
-    for parent in link.parents:
+    best_score = -10_000
+    stadium_words = (
+        "スタジアム", "競技場", "サッカー場", "ドーム",
+        "フィールド", "パーク", "アリーナ", "ウイング",
+    )
+    for depth, parent in enumerate(link.parents):
         if not isinstance(parent, Tag) or parent.name in {"body", "html"}:
             break
         text = normalize_space(parent.get_text(" ", strip=True))
         has_side = bool(re.search(r"\b(?:HOME|AWAY)\b", text))
         has_team = any(alias in text for alias in team_aliases)
         has_date = bool(DATE_MD_RE.search(text) or "日程未定" in text)
-        if has_side and has_team and has_date:
+        if not (has_side and has_team and has_date):
+            continue
+
+        game_link_count = len(parent.select('a[href*="/game/info/"]'))
+        has_round = bool(ROUND_RE.search(text))
+        has_stadium = any(word in text for word in stadium_words)
+        score = 0
+        score += 120 if game_link_count == 1 else -100 * max(game_link_count - 1, 1)
+        score += 35 if has_stadium else 0
+        score += 20 if has_round else 0
+        score -= min(len(text) // 180, 35)
+        score -= depth
+        if score > best_score:
             best = parent
-            # 小さすぎず、他試合を巻き込みにくいサイズを優先。
-            if len(text) >= 35:
-                return parent
+            best_score = score
     return best
 
 
@@ -207,37 +220,62 @@ def extract_opponent(container: Tag, aliases: list[str]) -> str:
 
 
 def extract_stadium(text: str, opponent: str, aliases: list[str]) -> str:
+    """京都公式の日程カードから会場名を抽出する。
+
+    「第10節」と「エディオンピースウイング広島」が別要素の場合にも、
+    節の直後にある候補を会場として扱う。試合日やチーム名は除外する。
+    """
     pieces = [normalize_space(piece) for piece in re.split(r"[\n\r]+", text) if normalize_space(piece)]
-    banned = ["HOME", "AWAY", "vs", "放送予定", "DAZN", opponent, *aliases]
-    for piece in pieces:
+    banned_exact = {"HOME", "AWAY", "vs", "VS", "放送予定", "DAZN", opponent, *aliases}
+
+    def plausible(candidate: str) -> bool:
+        if not candidate or candidate in banned_exact:
+            return False
+        if DATE_MD_RE.search(candidate) or TIME_RE.search(candidate):
+            return False
+        if ROUND_RE.fullmatch(candidate):
+            return False
+        if any(word in candidate for word in ("京都サンガ", "放送予定", "オフィシャルチケット", "試合情報")):
+            return False
+        return len(candidate) <= 80
+
+    for index, piece in enumerate(pieces):
         round_match = ROUND_RE.search(piece)
-        if round_match:
-            rest = normalize_space(piece.replace(round_match.group(0), ""))
-            if rest and not DATE_MD_RE.search(rest):
-                return rest
-    stadium_words = ("スタジアム", "競技場", "サッカー場", "ドーム", "フィールド", "パーク")
+        if not round_match:
+            continue
+        rest = normalize_space(piece.replace(round_match.group(0), ""))
+        if plausible(rest):
+            return rest
+        # 節と会場が別タグになっているケース。節の直後を優先する。
+        for candidate in pieces[index + 1:index + 4]:
+            if plausible(candidate):
+                return candidate
+
+    stadium_words = (
+        "スタジアム", "競技場", "サッカー場", "ドーム",
+        "フィールド", "パーク", "アリーナ", "ウイング",
+    )
     for piece in pieces:
-        if any(word in piece for word in stadium_words) and not any(piece == item for item in banned):
+        if any(word in piece for word in stadium_words) and plausible(piece):
             return piece
     return "未定"
 
 
 def competition_from_context(link: Tag, container: Tag) -> tuple[str, str]:
-    text = normalize_space(container.get_text(" ", strip=True))
-    if "ルヴァン" in text:
-        return "ＪリーグＹＢＣルヴァンカップ", "ＪリーグYBCルヴァンカップ"
-    if "天皇杯" in text:
-        return "天皇杯", "天皇杯"
-    if "Ｊ１" in text or "J1" in text or "明治安田" in text:
-        return "Ｊ１リーグ", "明治安田Ｊ１リーグ"
-    heading = link.find_previous(["h2", "h3", "h4"])
+    """大会名は京都公式ページの大会見出しだけを正とする。
+
+    試合カード内の注記には「ルヴァンカップ決勝進出時は…」のような
+    文言が含まれるため、カード本文から大会を推測するとJ1福岡戦などを
+    誤分類する。最も近い直前の大会見出しを参照する。
+    """
+    heading = link.find_previous(["h2", "h3"])
     if heading:
         heading_text = normalize_space(heading.get_text(" ", strip=True))
         if "ルヴァン" in heading_text:
             return "ＪリーグＹＢＣルヴァンカップ", heading_text
         if "天皇杯" in heading_text:
             return "天皇杯", heading_text
-        if "Ｊ１" in heading_text or "J1" in heading_text:
+        if "Ｊ１" in heading_text or "J1" in heading_text or "明治安田" in heading_text:
             return "Ｊ１リーグ", heading_text
     return "その他試合", "その他試合"
 
@@ -280,52 +318,8 @@ def normalize_round_name(value: str) -> str:
 def apply_official_fixture_corrections(
     rows: list[dict[str, str]],
 ) -> list[dict[str, str]]:
-    """確定済み公式日程を優先し、仮日程や重複行を除去する。"""
-    corrected = list(rows)
-    for correction in OFFICIAL_FIXTURE_CORRECTIONS:
-        season = correction["season"]
-        group = correction["competition_group"]
-        target_round = normalize_round_name(correction["round_name"])
-
-        same_competition = [
-            row for row in corrected
-            if row.get("season") == season
-            and row.get("competition_group") == group
-        ]
-        # その大会自体が取得されていないテスト用HTMLなどには、
-        # 固定試合を勝手に追加しない。
-        if not same_competition:
-            continue
-
-        candidates = [
-            row for row in same_competition
-            if (
-                normalize_round_name(row.get("round_name", "")) == target_round
-                or row.get("match_url") == correction["match_url"]
-                or (
-                    row.get("sort_date") == "2026-09-29"
-                    and row.get("opponent") in {"ＦＣ東京", "FC東京"}
-                )
-            )
-        ]
-
-        if candidates:
-            target = candidates[0]
-            # 同一大会・同一ラウンドの仮日程が複数ある場合は1件に集約。
-            corrected = [
-                row for row in corrected
-                if row is target or row not in candidates
-            ]
-        else:
-            target = {column: "" for column in MATCH_COLUMNS}
-            corrected.append(target)
-
-        target.update(correction)
-        target["competition_name"] = "ＪリーグYBCルヴァンカップ"
-        target["last_checked"] = now_iso()
-        target["match_key"] = fixture_match_key(target)
-
-    return corrected
+    """後方互換用。試合情報は京都公式日程ページをそのまま採用する。"""
+    return rows
 
 
 def parse_matches(html_text: str, base_url: str) -> list[dict[str, str]]:
@@ -525,11 +519,11 @@ def year_for_sale(month: int, match_date: date) -> int:
 
 
 def extract_general_sale(text: str, match_date: date) -> datetime | None:
-    """「一般販売／一般発売」の近くにある日時を抽出する。"""
+    """「一般販売／一般発売／一般向け前売発売日」の近くにある日時を抽出する。"""
     clean = normalize_space(text.replace("：", ":"))
     month_day = r"(?:(?P<year>20\d{2})[年/.-])?(?P<month>1[0-2]|0?[1-9])[月/.-](?P<day>3[01]|[12]?\d)日?"
     clock = r"(?P<hour>[01]?\d|2[0-3])[:時](?P<minute>[0-5]\d)?"
-    general = r"一般(?:販売|発売|向け販売|チケット販売)"
+    general = GENERAL_SALE_LABEL
     patterns = [
         re.compile(rf"{general}.{{0,100}}?{month_day}.{{0,40}}?{clock}", re.I),
         re.compile(rf"{month_day}.{{0,40}}?{clock}.{{0,100}}?{general}", re.I),
@@ -608,7 +602,7 @@ def candidate_block_score(text: str, match_date: date) -> int:
         score += 60
     if any(token in text for token in match_date_tokens(match_date)):
         score += 45
-    if re.search(r"一般(?:販売|発売)", text):
+    if GENERAL_SALE_LABEL_RE.search(text):
         score += 30
     if "チケット" in text:
         score += 5
@@ -632,7 +626,7 @@ def extract_general_sale_from_page(html_text: str, match_date: date) -> datetime
             return direct
         table = row.find_parent("table")
         table_text = tag_text(table) if isinstance(table, Tag) else ""
-        if re.search(r"一般(?:販売|発売)", table_text):
+        if GENERAL_SALE_LABEL_RE.search(table_text):
             candidates = extract_candidate_datetimes(text, match_date)
             if candidates:
                 return max(candidates)
@@ -657,7 +651,7 @@ def extract_general_sale_from_page(html_text: str, match_date: date) -> datetime
         if direct:
             return direct
         # 同一カード内に一般発売ラベルがあり、日時が列分割されている場合の補完。
-        if re.search(r"一般(?:販売|発売)", text):
+        if GENERAL_SALE_LABEL_RE.search(text):
             candidates = extract_candidate_datetimes(text, match_date)
             if candidates:
                 return max(candidates)
@@ -762,6 +756,24 @@ def enrich_away_matches(rows: list[dict[str, str]]) -> list[str]:
     return warnings
 
 
+def capture_fixture_fields(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    return [
+        {column: row.get(column, "") for column in FIXTURE_SOURCE_COLUMNS}
+        for row in rows
+    ]
+
+
+def assert_fixture_fields_unchanged(
+    expected: list[dict[str, str]],
+    rows: list[dict[str, str]],
+) -> None:
+    actual = capture_fixture_fields(rows)
+    if actual != expected:
+        raise RuntimeError(
+            "チケット情報の反映処理が、京都公式を正とする試合日程項目を変更しました。"
+        )
+
+
 def apply_manual_overrides(rows: list[dict[str, str]]) -> None:
     if not OVERRIDES_PATH.exists() or OVERRIDES_PATH.stat().st_size == 0:
         return
@@ -820,11 +832,14 @@ def main() -> None:
     matches = parse_matches(schedule_response.text, str(TEAM["schedule_url"]))
     news = parse_ticket_news(ticket_response.text, str(TEAM["ticket_news_url"]))
 
+    # 試合日・会場・大会・対戦カードは京都公式日程ページの値を固定する。
+    fixture_snapshot = capture_fixture_fields(matches)
     previous = load_previous()
     merge_previous_away(matches, previous)
     official_schedule_count = apply_official_ticket_schedules(matches)
     warnings = enrich_away_matches(matches)
     apply_manual_overrides(matches)
+    assert_fixture_fields_unchanged(fixture_snapshot, matches)
     write_outputs(matches, news, warnings)
     print(
         f"updated: matches={len(matches)} news={len(news)} "
