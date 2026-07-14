@@ -1,1 +1,11 @@
-{}
+{
+  "last_updated": "2026-07-14T14:29:22+09:00",
+  "match_count": 38,
+  "news_count": 10,
+  "warnings": [],
+  "show_warning": false,
+  "sources": {
+    "schedule": "https://www.sanga-fc.jp/game",
+    "ticket_news": "https://www.sanga-fc.jp/news/tickets"
+  }
+}
