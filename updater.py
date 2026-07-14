@@ -79,6 +79,28 @@ DATE_MD_RE = re.compile(r"(?<!\d)(1[0-2]|0?[1-9])[./月](3[01]|[12]?\d)(?:日)?"
 TIME_RE = re.compile(r"(?<!\d)([01]?\d|2[0-3])[:：]([0-5]\d)")
 ROUND_RE = re.compile(r"(第\s*\d+\s*節|第\s*\d+\s*回戦|準々決勝|準決勝|決勝|プレーオフ[^\s]*)")
 
+# 京都公式サイトで確定済みの個別試合補正。
+# 2026/27ルヴァンカップ4回戦は、京都公式で
+# 2026/10/3 16:00・アウェイ町田戦と発表されている。
+# 一時的な仮日程（9/29・FC東京等）がHTML内に残った場合でも、
+# 公開済みの確定情報を優先する。
+OFFICIAL_FIXTURE_CORRECTIONS = [
+    {
+        "season": "2026/27",
+        "competition_group": "ＪリーグＹＢＣルヴァンカップ",
+        "round_name": "４回戦",
+        "kickoff": "2026-10-03T16:00+09:00",
+        "date_text": "2026/10/3 16:00",
+        "sort_date": "2026-10-03",
+        "side": "AWAY",
+        "home": "ＦＣ町田ゼルビア",
+        "away": "京都サンガF.C.",
+        "opponent": "ＦＣ町田ゼルビア",
+        "stadium": "町田ＧＩＯＮスタジアム",
+        "match_url": "https://www.sanga-fc.jp/game/info/2026100307",
+    },
+]
+
 
 def now_iso() -> str:
     return datetime.now(JST).isoformat(timespec="seconds")
@@ -240,6 +262,70 @@ def compute_kyoto_home_sales(match_date: date) -> dict[str, str]:
     }
 
 
+def fixture_match_key(row: dict[str, str]) -> str:
+    key_source = (
+        f"{row.get('season', '')}|{row.get('competition_group', '')}|"
+        f"{row.get('round_name', '')}|{row.get('sort_date', '')}|"
+        f"{row.get('side', '')}|{row.get('opponent', '')}"
+    )
+    return hashlib.sha1(key_source.encode("utf-8")).hexdigest()[:16]
+
+
+def normalize_round_name(value: str) -> str:
+    return normalize_space(value).replace("第", "").replace(" ", "")
+
+
+def apply_official_fixture_corrections(
+    rows: list[dict[str, str]],
+) -> list[dict[str, str]]:
+    """確定済み公式日程を優先し、仮日程や重複行を除去する。"""
+    corrected = list(rows)
+    for correction in OFFICIAL_FIXTURE_CORRECTIONS:
+        season = correction["season"]
+        group = correction["competition_group"]
+        target_round = normalize_round_name(correction["round_name"])
+
+        same_competition = [
+            row for row in corrected
+            if row.get("season") == season
+            and row.get("competition_group") == group
+        ]
+        # その大会自体が取得されていないテスト用HTMLなどには、
+        # 固定試合を勝手に追加しない。
+        if not same_competition:
+            continue
+
+        candidates = [
+            row for row in same_competition
+            if (
+                normalize_round_name(row.get("round_name", "")) == target_round
+                or row.get("match_url") == correction["match_url"]
+                or (
+                    row.get("sort_date") == "2026-09-29"
+                    and row.get("opponent") in {"ＦＣ東京", "FC東京"}
+                )
+            )
+        ]
+
+        if candidates:
+            target = candidates[0]
+            # 同一大会・同一ラウンドの仮日程が複数ある場合は1件に集約。
+            corrected = [
+                row for row in corrected
+                if row is target or row not in candidates
+            ]
+        else:
+            target = {column: "" for column in MATCH_COLUMNS}
+            corrected.append(target)
+
+        target.update(correction)
+        target["competition_name"] = "ＪリーグYBCルヴァンカップ"
+        target["last_checked"] = now_iso()
+        target["match_key"] = fixture_match_key(target)
+
+    return corrected
+
+
 def parse_matches(html_text: str, base_url: str) -> list[dict[str, str]]:
     soup = BeautifulSoup(html_text, "html.parser")
     season = detect_season_label(soup)
@@ -299,7 +385,7 @@ def parse_matches(html_text: str, base_url: str) -> list[dict[str, str]]:
     # URLが取得できないページ変更時の誤った全消去を避けるため、最低1件を要求。
     if not matches:
         raise RuntimeError("京都公式試合ページから試合カードを取得できませんでした。HTML構造変更の可能性があります。")
-    return matches
+    return apply_official_fixture_corrections(matches)
 
 
 def parse_ticket_news(html_text: str, base_url: str) -> list[dict[str, str]]:
