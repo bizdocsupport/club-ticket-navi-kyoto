@@ -4,6 +4,7 @@ import csv
 import hashlib
 import json
 import re
+import unicodedata
 from datetime import date, datetime, time as dt_time, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urljoin
@@ -20,6 +21,7 @@ MATCHES_PATH = DATA_DIR / "matches.csv"
 NEWS_PATH = DATA_DIR / "ticket_news.csv"
 METADATA_PATH = DATA_DIR / "metadata.json"
 OVERRIDES_PATH = DATA_DIR / "manual_overrides.csv"
+OFFICIAL_SCHEDULES_PATH = DATA_DIR / "official_ticket_schedules.csv"
 JST = timezone(timedelta(hours=9))
 TEAM = get_team_config()
 
@@ -427,6 +429,95 @@ def get_away_ticket_source(opponent: str) -> dict[str, str] | None:
     return None
 
 
+def canonical_club_name(value: str) -> str:
+    """クラブ名の表記揺れを、公式チケット参照先の名称へ寄せる。"""
+    normalized = unicodedata.normalize("NFKC", normalize_space(value))
+    source = get_away_ticket_source(normalized)
+    if source:
+        return source["name"]
+    return normalized.replace(" ", "")
+
+
+def normalized_key(value: str) -> str:
+    return re.sub(r"\s+", "", unicodedata.normalize("NFKC", value or ""))
+
+
+def load_official_ticket_schedules(
+    path: Path | None = None,
+) -> list[dict[str, str]]:
+    """公式画像から人手でテキスト化した販売日程を読み込む。"""
+    schedule_path = path or OFFICIAL_SCHEDULES_PATH
+    if not schedule_path.exists() or schedule_path.stat().st_size == 0:
+        return []
+    with schedule_path.open(encoding="utf-8-sig", newline="") as file:
+        return [
+            {key: normalize_space(value) for key, value in row.items()}
+            for row in csv.DictReader(file)
+        ]
+
+
+def apply_official_ticket_schedules(
+    rows: list[dict[str, str]],
+    *,
+    team_name: str | None = None,
+    path: Path | None = None,
+) -> int:
+    """画像掲載の公式販売日程をアウェイ戦へ反映する。
+
+    日付が確定している行は日付を優先し、未定・複数日候補の行は
+    節番号で照合する。別クラブ版でも同じCSVと処理を再利用できる。
+    """
+    schedules = load_official_ticket_schedules(path)
+    if not schedules:
+        return 0
+
+    visitor = canonical_club_name(team_name or str(TEAM["team_name"]))
+    applied = 0
+    for row in rows:
+        if row.get("side") != "AWAY":
+            continue
+        host = canonical_club_name(row.get("opponent", ""))
+        row_date = row.get("sort_date", "")
+        row_round = normalized_key(row.get("round_name", ""))
+        row_competition = normalized_key(row.get("competition_group", ""))
+
+        best: tuple[int, dict[str, str]] | None = None
+        for schedule in schedules:
+            if canonical_club_name(schedule.get("host_club", "")) != host:
+                continue
+            if canonical_club_name(schedule.get("visitor_club", "")) != visitor:
+                continue
+            schedule_competition = normalized_key(schedule.get("competition_group", ""))
+            if schedule_competition and row_competition and schedule_competition != row_competition:
+                continue
+
+            schedule_date = schedule.get("match_date", "")
+            schedule_round = normalized_key(schedule.get("round_name", ""))
+            date_match = bool(schedule_date and row_date and schedule_date == row_date)
+            round_match = bool(schedule_round and row_round and schedule_round == row_round)
+            if not (date_match or round_match):
+                continue
+            score = (2 if date_match else 0) + (1 if round_match else 0)
+            if best is None or score > best[0]:
+                best = (score, schedule)
+
+        if best is None:
+            continue
+        schedule = best[1]
+        for source_column, target_column in (
+            ("general_at", "general_at"),
+            ("source_url", "ticket_source_url"),
+            ("source_name", "ticket_source_name"),
+            ("ticket_note", "ticket_note"),
+        ):
+            value = schedule.get(source_column, "")
+            if value:
+                row[target_column] = value
+        row["_official_schedule_applied"] = "1"
+        applied += 1
+    return applied
+
+
 def year_for_sale(month: int, match_date: date) -> int:
     candidates = [match_date.year - 1, match_date.year, match_date.year + 1]
     valid = [date(y, month, 1) for y in candidates]
@@ -647,6 +738,7 @@ def enrich_away_matches(rows: list[dict[str, str]]) -> list[str]:
         if row["side"] == "AWAY"
         and row["sort_date"] != "9999-12-31"
         and date.fromisoformat(row["sort_date"]) >= today
+        and not row.get("_official_schedule_applied")
     ]
     targets.sort(key=lambda x: x["sort_date"])
     page_cache: dict[str, str] = {}
@@ -716,6 +808,7 @@ def write_outputs(matches: list[dict[str, str]], news: list[dict[str, str]], war
             "schedule": TEAM["schedule_url"],
             "ticket_news": TEAM["ticket_news_url"],
             "away_ticket_pages": {name: url for name, _, url in AWAY_SOURCE_DEFINITIONS},
+            "official_ticket_schedules": str(OFFICIAL_SCHEDULES_PATH.name),
         },
     }
     METADATA_PATH.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -729,10 +822,14 @@ def main() -> None:
 
     previous = load_previous()
     merge_previous_away(matches, previous)
+    official_schedule_count = apply_official_ticket_schedules(matches)
     warnings = enrich_away_matches(matches)
     apply_manual_overrides(matches)
     write_outputs(matches, news, warnings)
-    print(f"updated: matches={len(matches)} news={len(news)} warnings={len(warnings)}")
+    print(
+        f"updated: matches={len(matches)} news={len(news)} "
+        f"official_schedules={official_schedule_count} warnings={len(warnings)}"
+    )
 
 
 if __name__ == "__main__":
