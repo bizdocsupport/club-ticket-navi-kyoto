@@ -1,1 +1,33 @@
-{}
+{
+  "last_updated": "2026-07-14T15:05:14+09:00",
+  "match_count": 38,
+  "news_count": 10,
+  "warnings": [],
+  "show_warning": false,
+  "sources": {
+    "schedule": "https://www.sanga-fc.jp/game",
+    "ticket_news": "https://www.sanga-fc.jp/news/tickets",
+    "away_ticket_pages": {
+      "水戸ホーリーホック": "https://www.mito-hollyhock.net/news_cat/ticket/",
+      "鹿島アントラーズ": "https://www.antlers.co.jp/blogs/news/260703cm5rd0",
+      "浦和レッズ": "https://www.urawa-reds.co.jp/ticket/saleperiod.php",
+      "ジェフユナイテッド千葉": "https://jefunited.co.jp/news/detail/5285",
+      "柏レイソル": "https://www.reysol.co.jp/ticket/tktscd.php",
+      "ＦＣ東京": "https://www.fctokyo.co.jp/ticket/price/",
+      "東京ヴェルディ": "https://www.verdy.co.jp/content/ticket/buy/",
+      "ＦＣ町田ゼルビア": "https://www.zelvia.co.jp/stadium-ticket/schedule/",
+      "川崎フロンターレ": "https://www.frontale.co.jp/tickets/",
+      "横浜Ｆ・マリノス": "https://www.f-marinos.com/ticket/schedule",
+      "清水エスパルス": "https://www.s-pulse.co.jp/tickets/schedule",
+      "名古屋グランパス": "https://nagoya-grampus.jp/ticket/schedule/",
+      "京都サンガF.C.": "https://www.sanga-fc.jp/ticket/schedule",
+      "ガンバ大阪": "https://www.gamba-osaka.net/ticket/schedule/",
+      "セレッソ大阪": "https://www.cerezo.jp/ticket/",
+      "ヴィッセル神戸": "https://www.vissel-kobe.co.jp/ticket/schedule/",
+      "ファジアーノ岡山": "https://www.fagiano-okayama.com/ticket/ticket_schedule/",
+      "サンフレッチェ広島": "https://www.sanfrecce.co.jp/tickets/schedule",
+      "アビスパ福岡": "https://www.avispa.co.jp/news/post-87276",
+      "Ｖ・ファーレン長崎": "https://www.v-varen.com/tickets_new"
+    }
+  }
+}
