@@ -1,12 +1,16 @@
 name: Update Kyoto Sanga ticket data
 
 on:
-  workflow_dispatch:
-
   schedule:
-    - cron: "0 7,19 * * *"
-      timezone: "Asia/Tokyo"
+    # 毎日 7:00（日本時間）
+    - cron: "0 22 * * *"
 
+    # 毎日 19:00（日本時間）
+    - cron: "0 10 * * *"
+
+  # Actions画面から手動実行するために必要
+  workflow_dispatch:
+  
 permissions:
   contents: write
 
