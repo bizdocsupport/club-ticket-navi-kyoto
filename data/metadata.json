@@ -1,10 +1,8 @@
 {
-  "last_updated": "2026-07-19T16:18:17+09:00",
+  "last_updated": "2026-07-19T23:36:40+09:00",
   "match_count": 38,
   "news_count": 10,
-  "warnings": [
-    "東京ヴェルディ戦: HTTPError"
-  ],
+  "warnings": [],
   "show_warning": false,
   "sources": {
     "schedule": "https://www.sanga-fc.jp/game",
