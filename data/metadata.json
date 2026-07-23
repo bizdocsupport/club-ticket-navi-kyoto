@@ -1,10 +1,8 @@
 {
-  "last_updated": "2026-07-23T16:45:04+09:00",
+  "last_updated": "2026-07-24T01:08:44+09:00",
   "match_count": 38,
   "news_count": 10,
-  "warnings": [
-    "鹿島アントラーズ戦: HTTPError"
-  ],
+  "warnings": [],
   "show_warning": false,
   "sources": {
     "schedule": "https://www.sanga-fc.jp/game",
